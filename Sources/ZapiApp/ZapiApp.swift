@@ -171,9 +171,12 @@ private struct RootView: View {
 private struct SidebarView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var isEnvironmentManagerPresented: Bool
+    @State private var activeTab: SidebarContentTab = .requests
     @State private var historySearchText = ""
     @State private var historyFilter: HistoryStatusFilter = .all
     @State private var onlySelectedRequestHistory = false
+    @State private var isClearHistoryConfirmationPresented = false
+    @State private var historyDeleteTarget: RequestHistoryEntry?
     @State private var renameTarget: SidebarRenameTarget?
     @State private var deleteTarget: SidebarDeleteTarget?
 
@@ -226,6 +229,42 @@ private struct SidebarView: View {
         } message: {
             if let deleteTarget {
                 Text(deleteTarget.message)
+            }
+        }
+        .confirmationDialog(
+            "Clear History?",
+            isPresented: $isClearHistoryConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Clear History", role: .destructive) {
+                model.clearHistory()
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All local request history entries will be removed from this workspace.")
+        }
+        .confirmationDialog(
+            "Delete History Entry?",
+            isPresented: Binding(
+                get: { historyDeleteTarget != nil },
+                set: { if !$0 { historyDeleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let historyDeleteTarget {
+                Button("Delete Entry", role: .destructive) {
+                    model.deleteHistoryEntry(id: historyDeleteTarget.id)
+                    self.historyDeleteTarget = nil
+                }
+            }
+
+            Button("Cancel", role: .cancel) {
+                historyDeleteTarget = nil
+            }
+        } message: {
+            if let historyDeleteTarget {
+                Text("The local history entry for \(historyDeleteTarget.resolvedRequest.method.rawValue) \(historyDeleteTarget.resolvedRequest.url) will be removed.")
             }
         }
     }
@@ -294,71 +333,88 @@ private struct SidebarView: View {
     private var sourceList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("Requests")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                    Spacer()
-                    Text("\(model.project.collections.flatMap(\.requests).count)")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                Picker("", selection: $activeTab) {
+                    ForEach(SidebarContentTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
 
-                ForEach(model.project.collections) { collection in
-                    SidebarCollectionSection(
-                        collection: collection,
-                        onAddRequest: {
-                            model.addRequest(to: collection.id)
-                        },
-                        onMoveCollectionUp: {
-                            model.moveCollection(id: collection.id, direction: .up)
-                        },
-                        onMoveCollectionDown: {
-                            model.moveCollection(id: collection.id, direction: .down)
-                        },
-                        onRenameCollection: {
-                            renameTarget = SidebarRenameTarget(
-                                kind: .collection(collection.id),
-                                currentName: collection.name
-                            )
-                        },
-                        onDeleteCollection: {
-                            deleteTarget = SidebarDeleteTarget(
-                                kind: .collection(collection.id),
-                                name: collection.name
-                            )
-                        },
-                        onSelectRequest: { requestID in
-                            model.selectRequest(collectionID: collection.id, requestID: requestID)
-                        },
-                        onRenameRequest: { request in
-                            renameTarget = SidebarRenameTarget(
-                                kind: .request(request.id),
-                                currentName: model.requestName(for: request)
-                            )
-                        },
-                        onDuplicateRequest: { request in
-                            model.duplicateRequest(id: request.id)
-                        },
-                        onMoveRequestUp: { request in
-                            model.moveRequest(id: request.id, direction: .up)
-                        },
-                        onMoveRequestDown: { request in
-                            model.moveRequest(id: request.id, direction: .down)
-                        },
-                        onDeleteRequest: { request in
-                            deleteTarget = SidebarDeleteTarget(
-                                kind: .request(request.id),
-                                name: model.requestName(for: request)
-                            )
-                        }
-                    )
+                switch activeTab {
+                case .requests:
+                    requestsList
+                case .history:
+                    historyDrawer
                 }
-
-                historyDrawer
             }
             .padding(14)
+        }
+    }
+
+    private var requestsList: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Requests")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+                Text("\(model.project.collections.flatMap(\.requests).count)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(model.project.collections) { collection in
+                SidebarCollectionSection(
+                    collection: collection,
+                    onAddRequest: {
+                        model.addRequest(to: collection.id)
+                    },
+                    onMoveCollectionUp: {
+                        model.moveCollection(id: collection.id, direction: .up)
+                    },
+                    onMoveCollectionDown: {
+                        model.moveCollection(id: collection.id, direction: .down)
+                    },
+                    onRenameCollection: {
+                        renameTarget = SidebarRenameTarget(
+                            kind: .collection(collection.id),
+                            currentName: collection.name
+                        )
+                    },
+                    onDeleteCollection: {
+                        deleteTarget = SidebarDeleteTarget(
+                            kind: .collection(collection.id),
+                            name: collection.name
+                        )
+                    },
+                    onSelectRequest: { requestID in
+                        model.selectRequest(collectionID: collection.id, requestID: requestID)
+                    },
+                    onRenameRequest: { request in
+                        renameTarget = SidebarRenameTarget(
+                            kind: .request(request.id),
+                            currentName: model.requestName(for: request)
+                        )
+                    },
+                    onDuplicateRequest: { request in
+                        model.duplicateRequest(id: request.id)
+                    },
+                    onMoveRequestUp: { request in
+                        model.moveRequest(id: request.id, direction: .up)
+                    },
+                    onMoveRequestDown: { request in
+                        model.moveRequest(id: request.id, direction: .down)
+                    },
+                    onDeleteRequest: { request in
+                        deleteTarget = SidebarDeleteTarget(
+                            kind: .request(request.id),
+                            name: model.requestName(for: request)
+                        )
+                    }
+                )
+            }
         }
     }
 
@@ -378,6 +434,13 @@ private struct SidebarView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.primary)
                 Spacer()
+                if !model.project.history.isEmpty {
+                    Button("Clear") {
+                        isClearHistoryConfirmationPresented = true
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 10, weight: .semibold))
+                }
                 Text("\(filteredHistory.count)")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -403,6 +466,8 @@ private struct SidebarView: View {
                 .foregroundStyle(.primary)
                 .toggleStyle(.switch)
                 .disabled(model.selectedRequest == nil)
+
+            historyDetailCard
 
             if filteredHistory.isEmpty {
                 Text("Send a request to populate local history.")
@@ -444,9 +509,25 @@ private struct SidebarView: View {
                             .buttonStyle(SidebarMiniButtonStyle())
 
                             Button {
+                                model.resendHistoryEntry(entry)
+                            } label: {
+                                Label("Resend", systemImage: "paperplane")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SidebarMiniButtonStyle())
+
+                            Button {
                                 model.restoreRequest(from: entry)
                             } label: {
                                 Label("Restore", systemImage: "arrow.uturn.backward")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(SidebarMiniButtonStyle())
+
+                            Button {
+                                historyDeleteTarget = entry
+                            } label: {
+                                Label("Delete", systemImage: "trash")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(SidebarMiniButtonStyle())
@@ -462,6 +543,109 @@ private struct SidebarView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var historyDetailCard: some View {
+        if let entry = model.selectedHistoryEntry {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Selected Entry")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                        Text("\(entry.resolvedRequest.method.rawValue) • Status \(entry.response.statusCode)")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    Spacer()
+                    Text(entry.executedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(entry.resolvedRequest.url)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+
+                HStack(spacing: 10) {
+                    historyMetaPill("Time", "\(entry.response.durationMilliseconds) ms")
+                    historyMetaPill("Size", "\(entry.response.sizeBytes) B")
+                    historyMetaPill("MIME", entry.response.mimeType ?? "unknown")
+                }
+
+                HStack(spacing: 6) {
+                    Button {
+                        model.inspectHistoryEntry(entry)
+                    } label: {
+                        Label("Inspect", systemImage: "eye")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SidebarMiniButtonStyle())
+
+                    Button {
+                        model.resendHistoryEntry(entry)
+                    } label: {
+                        Label("Resend", systemImage: "paperplane")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SidebarMiniButtonStyle())
+
+                    Button {
+                        model.restoreRequest(from: entry)
+                    } label: {
+                        Label("Restore", systemImage: "arrow.uturn.backward")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SidebarMiniButtonStyle())
+
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(entry.resolvedRequest.url, forType: .string)
+                    } label: {
+                        Label("Copy URL", systemImage: "doc.on.doc")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SidebarMiniButtonStyle())
+
+                    Button {
+                        historyDeleteTarget = entry
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SidebarMiniButtonStyle())
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(ZapiTheme.sidebarCard)
+            )
+        } else if !model.project.history.isEmpty {
+            Text("Select a history entry to inspect its request and response metadata.")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
+        }
+    }
+
+    private func historyMetaPill(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            Text(value)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(ZapiTheme.input)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var sidebarFooter: some View {
@@ -1943,7 +2127,6 @@ private struct ResponseView: View {
             VStack(spacing: 10) {
                 responseHeader
                 responsePanel
-                historyPanel
             }
             .padding(14)
         }
@@ -2025,52 +2208,6 @@ private struct ResponseView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(ZapiTheme.inspectorPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ZapiTheme.panelStroke, lineWidth: 1))
-    }
-
-    private var historyPanel: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text("Recent History")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text("\(model.project.history.count) entries")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            if model.project.history.isEmpty {
-                Text("No local request history yet.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(model.project.history.prefix(6)) { entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(entry.resolvedRequest.method.rawValue)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(ZapiTheme.accentStart)
-                            Text(entry.resolvedRequest.url)
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .lineLimit(1)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text("Status \(entry.response.statusCode) • \(entry.response.durationMilliseconds) ms")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.primary.opacity(0.72))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ZapiTheme.input)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-            }
-        }
-        .padding(12)
         .background(ZapiTheme.inspectorPanel)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(ZapiTheme.panelStroke, lineWidth: 1))
@@ -2428,6 +2565,13 @@ private enum ResponseTab: String, CaseIterable, Identifiable {
     case body = "Body"
     case headers = "Headers"
     case request = "Request"
+
+    var id: String { rawValue }
+}
+
+private enum SidebarContentTab: String, CaseIterable, Identifiable {
+    case requests = "Requests"
+    case history = "History"
 
     var id: String { rawValue }
 }

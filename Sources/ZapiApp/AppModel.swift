@@ -454,20 +454,39 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let restoredRequest = APIRequest(
-            name: "Replay \(entry.resolvedRequest.method.rawValue)",
-            method: entry.resolvedRequest.method,
-            urlTemplate: entry.resolvedRequest.url,
-            auth: .none,
-            queryItems: [],
-            headers: entry.resolvedRequest.headers
-                .sorted(by: { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending })
-                .map { APIKeyValue(key: $0.key, value: $0.value) },
-            body: entry.resolvedRequest.bodyPreview.map { .raw(text: $0, contentType: nil) } ?? .none
-        )
+        let restoredRequest = replayRequest(from: entry)
 
         project.collections[targetCollectionIndex].requests.append(restoredRequest)
         selectRequest(collectionID: project.collections[targetCollectionIndex].id, requestID: restoredRequest.id)
+        scheduleAutosave()
+    }
+
+    func resendHistoryEntry(_ entry: RequestHistoryEntry) {
+        let targetCollectionIndex = selectedCollectionIndex ?? project.collections.indices.first
+
+        guard let targetCollectionIndex else { return }
+
+        let replayRequest = replayRequest(from: entry)
+        let collectionID = project.collections[targetCollectionIndex].id
+        project.collections[targetCollectionIndex].requests.append(replayRequest)
+        selectRequest(collectionID: collectionID, requestID: replayRequest.id)
+        scheduleAutosave()
+        sendSelectedRequest()
+    }
+
+    func clearHistory() {
+        project.history.removeAll()
+        selectedHistoryEntryID = nil
+        scheduleAutosave()
+    }
+
+    func deleteHistoryEntry(id: UUID) {
+        project.history.removeAll(where: { $0.id == id })
+
+        if selectedHistoryEntryID == id {
+            selectedHistoryEntryID = nil
+        }
+
         scheduleAutosave()
     }
 
@@ -984,6 +1003,11 @@ final class AppModel: ObservableObject {
         Array(project.history.prefix(12))
     }
 
+    var selectedHistoryEntry: RequestHistoryEntry? {
+        guard let selectedHistoryEntryID else { return nil }
+        return project.history.first(where: { $0.id == selectedHistoryEntryID })
+    }
+
     func filteredHistory(
         searchText: String,
         statusFilter: HistoryStatusFilter,
@@ -1084,6 +1108,20 @@ final class AppModel: ObservableObject {
         guard let location = selectedRequestLocation else { return }
         mutation(&project.collections[location.collectionIndex].requests[location.requestIndex])
         scheduleAutosave()
+    }
+
+    private func replayRequest(from entry: RequestHistoryEntry) -> APIRequest {
+        APIRequest(
+            name: "Replay \(entry.resolvedRequest.method.rawValue)",
+            method: entry.resolvedRequest.method,
+            urlTemplate: entry.resolvedRequest.url,
+            auth: .none,
+            queryItems: [],
+            headers: entry.resolvedRequest.headers
+                .sorted(by: { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending })
+                .map { APIKeyValue(key: $0.key, value: $0.value) },
+            body: entry.resolvedRequest.bodyPreview.map { .raw(text: $0, contentType: nil) } ?? .none
+        )
     }
 
     private var selectedRequestLocation: (collectionIndex: Int, requestIndex: Int)? {

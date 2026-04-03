@@ -137,7 +137,7 @@ public struct OpenAPIImporter: Sendable {
         }
 
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "{{\\$1}}")
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "{{$1}}")
     }
 
     private func parseParameters(_ rawValue: Any?) -> [OpenAPIParameter] {
