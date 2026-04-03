@@ -164,6 +164,9 @@ struct ZapiSmokeChecks {
             ],
             environments: [
                 APIEnvironment(name: "Local", variables: ["host": "localhost"])
+            ],
+            authPresets: [
+                SavedAuthPreset(name: "Local Bearer", auth: .bearerToken("{{token}}"))
             ]
         )
 
@@ -172,6 +175,23 @@ struct ZapiSmokeChecks {
 
         guard loaded == project else {
             throw SmokeCheckError.failed("LocalProjectStore failed to round-trip the project document.")
+        }
+
+        let legacyProjectData = Data(
+            """
+            {
+              "id": "\(UUID().uuidString)",
+              "name": "Legacy Workspace",
+              "collections": [],
+              "environments": [],
+              "history": []
+            }
+            """.utf8
+        )
+
+        let legacyProject = try JSONDecoder().decode(APIProject.self, from: legacyProjectData)
+        guard legacyProject.authPresets.isEmpty else {
+            throw SmokeCheckError.failed("APIProject failed to decode legacy project data without auth presets.")
         }
     }
 

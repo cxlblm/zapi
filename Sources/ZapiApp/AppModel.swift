@@ -305,6 +305,63 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func saveSelectedAuthAsPreset(named name: String) throws {
+        guard let request = selectedRequest else {
+            throw AuthPresetError.noRequestSelected
+        }
+
+        guard request.auth.isPresetEligible else {
+            throw AuthPresetError.emptyAuth
+        }
+
+        let resolvedName = resolvedAuthPresetName(from: name)
+        project.authPresets.append(
+            SavedAuthPreset(
+                name: resolvedName,
+                auth: request.auth
+            )
+        )
+        scheduleAutosave()
+    }
+
+    func applyAuthPreset(id: UUID) {
+        guard let preset = project.authPresets.first(where: { $0.id == id }) else { return }
+
+        mutateSelectedRequest { request in
+            request.auth = preset.auth
+        }
+    }
+
+    func renameAuthPreset(id: UUID, to newName: String) {
+        guard let index = project.authPresets.firstIndex(where: { $0.id == id }) else { return }
+
+        let resolvedName = resolvedAuthPresetName(from: newName, excluding: id)
+        project.authPresets[index].name = resolvedName
+        scheduleAutosave()
+    }
+
+    func updateAuthPresetFromSelectedRequest(id: UUID) throws {
+        guard let request = selectedRequest else {
+            throw AuthPresetError.noRequestSelected
+        }
+
+        guard request.auth.isPresetEligible else {
+            throw AuthPresetError.emptyAuth
+        }
+
+        guard let index = project.authPresets.firstIndex(where: { $0.id == id }) else {
+            throw AuthPresetError.presetNotFound
+        }
+
+        project.authPresets[index].auth = request.auth
+        scheduleAutosave()
+    }
+
+    func deleteAuthPreset(id: UUID) {
+        project.authPresets.removeAll(where: { $0.id == id })
+        scheduleAutosave()
+    }
+
     func selectRequest(collectionID: UUID?, requestID: UUID) {
         selectedCollectionID = collectionID
         selectedRequestID = requestID
@@ -1061,6 +1118,23 @@ final class AppModel: ObservableObject {
         project.selectedEnvironment?.variables.keys.sorted() ?? []
     }
 
+    var selectedAuthPreset: SavedAuthPreset? {
+        guard let request = selectedRequest else { return nil }
+        return project.authPresets.first(where: { $0.auth == request.auth })
+    }
+
+    var canSaveSelectedAuthAsPreset: Bool {
+        selectedRequest?.auth.isPresetEligible ?? false
+    }
+
+    func suggestedAuthPresetName() -> String {
+        guard let request = selectedRequest else {
+            return resolvedAuthPresetName(from: "Auth Preset")
+        }
+
+        return resolvedAuthPresetName(from: request.auth.defaultPresetName)
+    }
+
     func requestDiagnostics(for request: APIRequest) -> RequestDiagnostics {
         let referencedKeys = referencedVariableKeys(for: request)
         let variables = project.selectedEnvironment?.variables ?? [:]
@@ -1314,6 +1388,27 @@ final class AppModel: ObservableObject {
         return "\(base) Copy \(counter)"
     }
 
+    private func resolvedAuthPresetName(from proposedName: String, excluding excludedID: UUID? = nil) -> String {
+        let trimmedName = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmedName.isEmpty ? "Auth Preset" : trimmedName
+        let existing = Set(
+            project.authPresets
+                .filter { $0.id != excludedID }
+                .map(\.name)
+        )
+
+        if !existing.contains(base) {
+            return base
+        }
+
+        var counter = 2
+        while existing.contains("\(base) \(counter)") {
+            counter += 1
+        }
+
+        return "\(base) \(counter)"
+    }
+
     private func scheduleAutosave(immediate: Bool = false) {
         autosaveTask?.cancel()
 
@@ -1428,6 +1523,57 @@ enum BodyEditorKind: String, CaseIterable, Identifiable {
             case .none:
                 return .formURLEncoded([])
             }
+        }
+    }
+}
+
+enum AuthPresetError: LocalizedError {
+    case noRequestSelected
+    case emptyAuth
+    case presetNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .noRequestSelected:
+            return "Select a request before working with auth presets."
+        case .emptyAuth:
+            return "Configure Bearer, Basic, or API Key auth before saving a preset."
+        case .presetNotFound:
+            return "That auth preset could not be found."
+        }
+    }
+}
+
+private extension RequestAuth {
+    var isPresetEligible: Bool {
+        switch self {
+        case .none:
+            return false
+        case let .bearerToken(token):
+            return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case let .basic(username, password):
+            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case let .apiKey(name, value, _):
+            return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var defaultPresetName: String {
+        switch self {
+        case .none:
+            return "Auth Preset"
+        case .bearerToken:
+            return "Bearer Token"
+        case .basic:
+            return "Basic Auth"
+        case let .apiKey(name, _, location):
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedName.isEmpty {
+                return location == .header ? "Header API Key" : "Query API Key"
+            }
+            return "\(trimmedName) \(location == .header ? "Header" : "Query")"
         }
     }
 }

@@ -955,6 +955,9 @@ private struct RequestEditorView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var isEnvironmentManagerPresented: Bool
     @State private var activeSection: RequestSection = .params
+    @State private var isSaveAuthPresetPresented = false
+    @State private var isManageAuthPresetsPresented = false
+    @State private var suggestedAuthPresetName = ""
 
     var body: some View {
         ZStack {
@@ -981,6 +984,16 @@ private struct RequestEditorView: View {
                 )
                 .padding(40)
             }
+        }
+        .sheet(isPresented: $isSaveAuthPresetPresented) {
+            SaveAuthPresetSheet(initialName: suggestedAuthPresetName)
+                .environmentObject(model)
+                .frame(minWidth: 420, minHeight: 220)
+        }
+        .sheet(isPresented: $isManageAuthPresetsPresented) {
+            AuthPresetManagerSheet()
+                .environmentObject(model)
+                .frame(minWidth: 720, minHeight: 420)
         }
     }
 
@@ -1045,6 +1058,54 @@ private struct RequestEditorView: View {
             }
         case .auth:
             panelShell(title: "Authorization", subtitle: "Configure local auth helpers without any cloud sync.") {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Presets")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(model.selectedAuthPreset?.name ?? "Apply saved auth to the current request.")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(model.selectedAuthPreset == nil ? .secondary : .primary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Menu {
+                        if model.project.authPresets.isEmpty {
+                            Button("No Saved Presets") {}
+                                .disabled(true)
+                        } else {
+                            ForEach(model.project.authPresets) { preset in
+                                Button {
+                                    model.applyAuthPreset(id: preset.id)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(preset.name)
+                                        Text(preset.auth.authSummary)
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Apply Preset", systemImage: "key.horizontal.fill")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .disabled(model.project.authPresets.isEmpty)
+
+                    Button("Save Current") {
+                        suggestedAuthPresetName = model.suggestedAuthPresetName()
+                        isSaveAuthPresetPresented = true
+                    }
+                    .disabled(!model.canSaveSelectedAuthAsPreset)
+
+                    Button("Manage") {
+                        isManageAuthPresetsPresented = true
+                    }
+                    .disabled(model.project.authPresets.isEmpty)
+                }
+
                 Picker("Type", selection: model.authKindBinding()) {
                     ForEach(AuthEditorKind.allCases) { kind in
                         Text(kind.rawValue).tag(kind)
@@ -1529,6 +1590,7 @@ private struct RequestTabItem: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1541,24 +1603,31 @@ private struct RequestTabItem: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(isSelected ? Color.primary : Color.primary.opacity(0.75))
                     .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Text(collectionName)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 2)
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSelected || isHovering ? Color.secondary : Color.secondary.opacity(0.45))
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
+            .opacity(showsCloseButton ? 1 : 0)
+            .allowsHitTesting(showsCloseButton)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(width: 196, alignment: .leading)
+        .frame(minWidth: 108, maxWidth: 220, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 9)
                 .fill(isSelected ? ZapiTheme.selectedEditorItem : Color.clear)
@@ -1567,7 +1636,15 @@ private struct RequestTabItem: View {
             RoundedRectangle(cornerRadius: 9)
                 .stroke(isSelected ? ZapiTheme.selectedEditorStroke : Color.clear, lineWidth: 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 9))
+        .onHover { hovering in
+            isHovering = hovering
+        }
         .onTapGesture(perform: onSelect)
+    }
+
+    private var showsCloseButton: Bool {
+        isSelected || isHovering
     }
 
     private var methodColor: Color {
@@ -1812,6 +1889,264 @@ private struct EnvironmentManagerSheet: View {
                 )
                 .padding(24)
             }
+        }
+    }
+}
+
+private struct SaveAuthPresetSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    @State private var presetName: String
+    @State private var errorMessage: String?
+
+    init(initialName: String) {
+        _presetName = State(initialValue: initialName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Save Auth Preset")
+                        .font(.title3.weight(.bold))
+                    Text("Store the current request auth locally so you can reuse it across requests.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Cancel") {
+                    dismiss()
+                }
+            }
+
+            if let request = model.selectedRequest {
+                HStack(spacing: 10) {
+                    Text("Current Auth")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Text(request.authSummary)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.red.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Preset Name")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
+                TextField("Bearer Token", text: $presetName)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Spacer()
+
+            HStack {
+                Spacer()
+
+                Button("Save Preset") {
+                    do {
+                        try model.saveSelectedAuthAsPreset(named: presetName)
+                        dismiss()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!model.canSaveSelectedAuthAsPreset)
+            }
+        }
+        .padding(20)
+    }
+}
+
+private struct AuthPresetManagerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    @State private var selectedPresetID: UUID?
+    @State private var draftName = ""
+    @State private var errorMessage: String?
+
+    private var selectedPreset: SavedAuthPreset? {
+        guard let selectedPresetID else { return nil }
+        return model.project.authPresets.first(where: { $0.id == selectedPresetID })
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: $selectedPresetID) {
+                ForEach(model.project.authPresets) { preset in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(preset.name)
+                            .font(.system(size: 13, weight: .bold))
+                        Text(preset.auth.authSummary)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(preset.id)
+                }
+            }
+            .navigationTitle("Auth Presets")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        } detail: {
+            if let preset = selectedPreset {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Preset Details")
+                                    .font(.title3.weight(.bold))
+                                Text("Reuse or update local auth helpers without touching cloud services.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Color.red.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Name")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                TextField("Preset name", text: $draftName)
+                                    .textFieldStyle(.roundedBorder)
+
+                                Button("Rename") {
+                                    model.renameAuthPreset(id: preset.id, to: draftName)
+                                    draftName = model.project.authPresets.first(where: { $0.id == preset.id })?.name ?? draftName
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Configuration")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.secondary)
+
+                            authPresetPreview(for: preset.auth)
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("Apply to Current Request") {
+                                model.applyAuthPreset(id: preset.id)
+                            }
+
+                            Button("Replace With Current Request") {
+                                do {
+                                    try model.updateAuthPresetFromSelectedRequest(id: preset.id)
+                                } catch {
+                                    errorMessage = error.localizedDescription
+                                }
+                            }
+                            .disabled(!model.canSaveSelectedAuthAsPreset)
+
+                            Spacer()
+
+                            Button("Delete Preset", role: .destructive) {
+                                model.deleteAuthPreset(id: preset.id)
+                                repairSelection()
+                            }
+                        }
+                    }
+                    .padding(20)
+                }
+            } else {
+                PlaceholderView(
+                    title: "No Preset Selected",
+                    systemImage: "key.horizontal",
+                    message: "Choose a saved auth preset to rename it, apply it, or replace it with the current request auth."
+                )
+                .padding(24)
+            }
+        }
+        .onAppear {
+            repairSelection()
+        }
+        .onChange(of: model.project.authPresets.map(\.id)) { _ in
+            repairSelection()
+        }
+        .onChange(of: selectedPresetID) { _ in
+            draftName = selectedPreset?.name ?? ""
+            errorMessage = nil
+        }
+    }
+
+    private func repairSelection() {
+        if let selectedPresetID,
+           model.project.authPresets.contains(where: { $0.id == selectedPresetID }) {
+            draftName = selectedPreset?.name ?? draftName
+            return
+        }
+
+        selectedPresetID = model.project.authPresets.first?.id
+        draftName = selectedPreset?.name ?? ""
+        errorMessage = nil
+    }
+
+    @ViewBuilder
+    private func authPresetPreview(for auth: RequestAuth) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            previewRow(label: "Type", value: auth.authSummary)
+
+            switch auth {
+            case .none:
+                previewRow(label: "Details", value: "No automatic auth")
+            case let .bearerToken(token):
+                previewRow(label: "Token", value: token)
+            case let .basic(username, password):
+                previewRow(label: "Username", value: username)
+                previewRow(label: "Password", value: password)
+            case let .apiKey(name, value, location):
+                previewRow(label: "Name", value: name)
+                previewRow(label: "Value", value: value)
+                previewRow(label: "Location", value: location.rawValue.capitalized)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ZapiTheme.input)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func previewRow(label: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(label)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .leading)
+
+            Text(value.isEmpty ? "<empty>" : value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
         }
     }
 }
@@ -2620,7 +2955,13 @@ private enum AppAppearance: String, CaseIterable, Identifiable {
 
 private extension APIRequest {
     var authSummary: String {
-        switch auth {
+        auth.authSummary
+    }
+}
+
+private extension RequestAuth {
+    var authSummary: String {
+        switch self {
         case .none:
             return "No auth"
         case .bearerToken:

@@ -7,6 +7,17 @@ public struct APIProject: Codable, Equatable, Sendable, Identifiable {
     public var environments: [APIEnvironment]
     public var selectedEnvironmentID: UUID?
     public var history: [RequestHistoryEntry]
+    public var authPresets: [SavedAuthPreset]
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case collections
+        case environments
+        case selectedEnvironmentID
+        case history
+        case authPresets
+    }
 
     public init(
         id: UUID = UUID(),
@@ -14,7 +25,8 @@ public struct APIProject: Codable, Equatable, Sendable, Identifiable {
         collections: [APICollection] = [],
         environments: [APIEnvironment] = [],
         selectedEnvironmentID: UUID? = nil,
-        history: [RequestHistoryEntry] = []
+        history: [RequestHistoryEntry] = [],
+        authPresets: [SavedAuthPreset] = []
     ) {
         self.id = id
         self.name = name
@@ -22,6 +34,29 @@ public struct APIProject: Codable, Equatable, Sendable, Identifiable {
         self.environments = environments
         self.selectedEnvironmentID = selectedEnvironmentID
         self.history = history
+        self.authPresets = authPresets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        collections = try container.decodeIfPresent([APICollection].self, forKey: .collections) ?? []
+        environments = try container.decodeIfPresent([APIEnvironment].self, forKey: .environments) ?? []
+        selectedEnvironmentID = try container.decodeIfPresent(UUID.self, forKey: .selectedEnvironmentID)
+        history = try container.decodeIfPresent([RequestHistoryEntry].self, forKey: .history) ?? []
+        authPresets = try container.decodeIfPresent([SavedAuthPreset].self, forKey: .authPresets) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(collections, forKey: .collections)
+        try container.encode(environments, forKey: .environments)
+        try container.encodeIfPresent(selectedEnvironmentID, forKey: .selectedEnvironmentID)
+        try container.encode(history, forKey: .history)
+        try container.encode(authPresets, forKey: .authPresets)
     }
 
     public var selectedEnvironment: APIEnvironment? {
@@ -61,6 +96,18 @@ public struct APIEnvironment: Codable, Equatable, Sendable, Identifiable {
         self.name = name
         self.variables = variables
         self.maskedKeys = maskedKeys
+    }
+}
+
+public struct SavedAuthPreset: Codable, Equatable, Sendable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var auth: RequestAuth
+
+    public init(id: UUID = UUID(), name: String, auth: RequestAuth) {
+        self.id = id
+        self.name = name
+        self.auth = auth
     }
 }
 
