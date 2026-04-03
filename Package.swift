@@ -31,6 +31,10 @@ let package = Package(
         .executableTarget(
             name: "ZapiSmokeChecks",
             dependencies: ["ZapiCore"]
+        ),
+        .testTarget(
+            name: "ZapiCoreTests",
+            dependencies: ["ZapiCore"]
         )
     ]
 )

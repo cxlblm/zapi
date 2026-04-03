@@ -18,16 +18,28 @@ final class AppModel: ObservableObject {
     private let store: LocalProjectStore?
     private let executor: RequestExecutor
     private let curlImporter: CurlImporter
+    private let curlExporter: CurlExporter
+    private let codeSnippetGenerator: CodeSnippetGenerator
+    private let openAPIImporter: OpenAPIImporter
+    private let environmentResolver: EnvironmentResolver
     private var autosaveTask: Task<Void, Never>?
 
     init(
         store: LocalProjectStore?,
         executor: RequestExecutor = RequestExecutor(),
-        curlImporter: CurlImporter = CurlImporter()
+        curlImporter: CurlImporter = CurlImporter(),
+        curlExporter: CurlExporter = CurlExporter(),
+        codeSnippetGenerator: CodeSnippetGenerator = CodeSnippetGenerator(),
+        openAPIImporter: OpenAPIImporter = OpenAPIImporter(),
+        environmentResolver: EnvironmentResolver = EnvironmentResolver()
     ) {
         self.store = store
         self.executor = executor
         self.curlImporter = curlImporter
+        self.curlExporter = curlExporter
+        self.codeSnippetGenerator = codeSnippetGenerator
+        self.openAPIImporter = openAPIImporter
+        self.environmentResolver = environmentResolver
 
         let sample = Self.sampleProject()
         self.project = sample
@@ -74,6 +86,22 @@ final class AppModel: ObservableObject {
         scheduleAutosave()
     }
 
+    func addRequest(to collectionID: UUID) {
+        guard let collectionIndex = project.collections.firstIndex(where: { $0.id == collectionID }) else {
+            addRequest()
+            return
+        }
+
+        let request = APIRequest(
+            name: "New Request",
+            method: .get,
+            urlTemplate: "https://httpbin.org/get"
+        )
+        project.collections[collectionIndex].requests.append(request)
+        selectRequest(collectionID: project.collections[collectionIndex].id, requestID: request.id)
+        scheduleAutosave()
+    }
+
     func addRequest() {
         guard let collectionIndex = selectedCollectionIndex ?? project.collections.indices.first else {
             addCollection()
@@ -90,6 +118,142 @@ final class AppModel: ObservableObject {
         scheduleAutosave()
     }
 
+    func renameCollection(id: UUID, to newName: String) {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            !trimmedName.isEmpty,
+            let index = project.collections.firstIndex(where: { $0.id == id })
+        else {
+            return
+        }
+
+        project.collections[index].name = trimmedName
+        scheduleAutosave()
+    }
+
+    func canMoveCollection(id: UUID, direction: MoveDirection) -> Bool {
+        guard let index = project.collections.firstIndex(where: { $0.id == id }) else { return false }
+
+        switch direction {
+        case .up:
+            return index > 0
+        case .down:
+            return index < project.collections.count - 1
+        }
+    }
+
+    func moveCollection(id: UUID, direction: MoveDirection) {
+        guard let index = project.collections.firstIndex(where: { $0.id == id }) else { return }
+
+        let destinationIndex: Int
+        switch direction {
+        case .up:
+            guard index > 0 else { return }
+            destinationIndex = index - 1
+        case .down:
+            guard index < project.collections.count - 1 else { return }
+            destinationIndex = index + 1
+        }
+
+        let collection = project.collections.remove(at: index)
+        project.collections.insert(collection, at: destinationIndex)
+        scheduleAutosave()
+    }
+
+    func deleteCollection(id: UUID) {
+        guard let index = project.collections.firstIndex(where: { $0.id == id }) else { return }
+
+        let removedRequestIDs = Set(project.collections[index].requests.map(\.id))
+        project.collections.remove(at: index)
+        openRequestIDs.removeAll(where: { removedRequestIDs.contains($0) })
+
+        if project.collections.isEmpty {
+            let collection = APICollection(name: "New Collection")
+            let request = APIRequest(
+                name: "New Request",
+                method: .get,
+                urlTemplate: "https://httpbin.org/get"
+            )
+            project.collections = [APICollection(id: collection.id, name: collection.name, requests: [request])]
+        }
+
+        repairSelection()
+        scheduleAutosave()
+    }
+
+    func renameRequest(id: UUID, to newName: String) {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        for collectionIndex in project.collections.indices {
+            if let requestIndex = project.collections[collectionIndex].requests.firstIndex(where: { $0.id == id }) {
+                project.collections[collectionIndex].requests[requestIndex].name = trimmedName
+                scheduleAutosave()
+                return
+            }
+        }
+    }
+
+    func canMoveRequest(id: UUID, direction: MoveDirection) -> Bool {
+        guard
+            let location = requestLocation(for: id)
+        else {
+            return false
+        }
+
+        let requests = project.collections[location.collectionIndex].requests
+        switch direction {
+        case .up:
+            return location.requestIndex > 0
+        case .down:
+            return location.requestIndex < requests.count - 1
+        }
+    }
+
+    func moveRequest(id: UUID, direction: MoveDirection) {
+        guard let location = requestLocation(for: id) else { return }
+
+        let destinationIndex: Int
+        switch direction {
+        case .up:
+            guard location.requestIndex > 0 else { return }
+            destinationIndex = location.requestIndex - 1
+        case .down:
+            guard location.requestIndex < project.collections[location.collectionIndex].requests.count - 1 else { return }
+            destinationIndex = location.requestIndex + 1
+        }
+
+        let request = project.collections[location.collectionIndex].requests.remove(at: location.requestIndex)
+        project.collections[location.collectionIndex].requests.insert(request, at: destinationIndex)
+        scheduleAutosave()
+    }
+
+    func duplicateRequest(id: UUID) {
+        for collectionIndex in project.collections.indices {
+            if let requestIndex = project.collections[collectionIndex].requests.firstIndex(where: { $0.id == id }) {
+                var duplicate = project.collections[collectionIndex].requests[requestIndex]
+                duplicate.id = UUID()
+                duplicate.name = nextRequestName(base: requestName(for: duplicate))
+                project.collections[collectionIndex].requests.insert(duplicate, at: requestIndex + 1)
+                selectRequest(collectionID: project.collections[collectionIndex].id, requestID: duplicate.id)
+                scheduleAutosave()
+                return
+            }
+        }
+    }
+
+    func deleteRequest(id: UUID) {
+        for collectionIndex in project.collections.indices {
+            if let requestIndex = project.collections[collectionIndex].requests.firstIndex(where: { $0.id == id }) {
+                project.collections[collectionIndex].requests.remove(at: requestIndex)
+                openRequestIDs.removeAll(where: { $0 == id })
+                repairSelection()
+                scheduleAutosave()
+                return
+            }
+        }
+    }
+
     func importCurlCommand(_ command: String) throws {
         if project.collections.isEmpty {
             project.collections.append(APICollection(name: "Imported"))
@@ -103,6 +267,42 @@ final class AppModel: ObservableObject {
             requestID: importedRequest.id
         )
         scheduleAutosave()
+    }
+
+    func importOpenAPIDocument(_ document: String) throws {
+        let importedCollection = try openAPIImporter.importDocument(document)
+        let collectionName = nextCollectionName(base: importedCollection.name)
+        var collection = importedCollection
+        collection.id = UUID()
+        collection.name = collectionName
+        project.collections.append(collection)
+
+        if let firstRequest = collection.requests.first {
+            selectRequest(collectionID: collection.id, requestID: firstRequest.id)
+        } else {
+            selectedCollectionID = collection.id
+        }
+
+        scheduleAutosave()
+    }
+
+    func exportSelectedRequestAsCurl() throws -> String {
+        guard let request = selectedRequest else {
+            return "curl"
+        }
+
+        let preview = try executor.preview(request, environment: project.selectedEnvironment)
+        return curlExporter.export(snapshot: preview, followRedirects: request.followRedirects)
+    }
+
+    func generateCodeSnippet(format: CodeSnippetFormat) throws -> String {
+        guard let request = selectedRequest else { return "" }
+        let preview = try executor.preview(request, environment: project.selectedEnvironment)
+        return codeSnippetGenerator.generate(
+            format: format,
+            snapshot: preview,
+            followRedirects: request.followRedirects
+        )
     }
 
     func selectRequest(collectionID: UUID?, requestID: UUID) {
@@ -166,6 +366,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func addFormField() {
+        mutateSelectedRequest { request in
+            guard case let .formURLEncoded(fields) = request.body else { return }
+            request.body = .formURLEncoded(fields + [APIKeyValue(key: "", value: "")])
+        }
+    }
+
     func addEnvironmentVariable() {
         guard let index = selectedEnvironmentIndex else { return }
         let key = nextEnvironmentKey(base: "NEW_KEY")
@@ -205,6 +412,13 @@ final class AppModel: ObservableObject {
     func removeQueryItem(id: UUID) {
         mutateSelectedRequest { request in
             request.queryItems.removeAll(where: { $0.id == id })
+        }
+    }
+
+    func removeFormField(id: UUID) {
+        mutateSelectedRequest { request in
+            guard case let .formURLEncoded(fields) = request.body else { return }
+            request.body = .formURLEncoded(fields.filter { $0.id != id })
         }
     }
 
@@ -378,6 +592,53 @@ final class AppModel: ObservableObject {
                 self?.mutateSelectedRequest { request in
                     guard let index = request.queryItems.firstIndex(where: { $0.id == id }) else { return }
                     request.queryItems[index].isEnabled = newValue
+                }
+            }
+        )
+    }
+
+    func bindingForFormField(_ id: UUID, keyPath: WritableKeyPath<APIKeyValue, String>) -> Binding<String> {
+        Binding(
+            get: { [weak self] in
+                guard
+                    let self,
+                    case let .formURLEncoded(fields) = self.selectedRequest?.body,
+                    let field = fields.first(where: { $0.id == id })
+                else {
+                    return ""
+                }
+                return field[keyPath: keyPath]
+            },
+            set: { [weak self] newValue in
+                self?.mutateSelectedRequest { request in
+                    guard case let .formURLEncoded(fields) = request.body else { return }
+                    var updatedFields = fields
+                    guard let index = updatedFields.firstIndex(where: { $0.id == id }) else { return }
+                    updatedFields[index][keyPath: keyPath] = newValue
+                    request.body = .formURLEncoded(updatedFields)
+                }
+            }
+        )
+    }
+
+    func bindingForFormEnabled(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { [weak self] in
+                guard
+                    let self,
+                    case let .formURLEncoded(fields) = self.selectedRequest?.body
+                else {
+                    return true
+                }
+                return fields.first(where: { $0.id == id })?.isEnabled ?? true
+            },
+            set: { [weak self] newValue in
+                self?.mutateSelectedRequest { request in
+                    guard case let .formURLEncoded(fields) = request.body else { return }
+                    var updatedFields = fields
+                    guard let index = updatedFields.firstIndex(where: { $0.id == id }) else { return }
+                    updatedFields[index].isEnabled = newValue
+                    request.body = .formURLEncoded(updatedFields)
                 }
             }
         )
@@ -608,6 +869,14 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func formatSelectedJSONBody() {
+        mutateSelectedRequest { request in
+            guard case let .json(text) = request.body else { return }
+            guard let formatted = Self.prettyPrintedJSON(from: text) else { return }
+            request.body = .json(formatted)
+        }
+    }
+
     func bindingForEnvironmentValue(key: String) -> Binding<String> {
         Binding(
             get: { [weak self] in
@@ -750,7 +1019,7 @@ final class AppModel: ObservableObject {
         guard let response = latestResponse else { return "" }
         guard let bodyText = response.bodyText, !bodyText.isEmpty else { return "<empty body>" }
 
-        if let formattedJSON = prettyPrintedJSON(from: bodyText) {
+        if let formattedJSON = Self.prettyPrintedJSON(from: bodyText) {
             return formattedJSON
         }
 
@@ -762,6 +1031,38 @@ final class AppModel: ObservableObject {
         return response.headers
             .sorted(by: { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending })
             .map { ($0.key, $0.value) }
+    }
+
+    var selectedEnvironmentVariableKeys: [String] {
+        project.selectedEnvironment?.variables.keys.sorted() ?? []
+    }
+
+    func requestDiagnostics(for request: APIRequest) -> RequestDiagnostics {
+        let referencedKeys = referencedVariableKeys(for: request)
+        let variables = project.selectedEnvironment?.variables ?? [:]
+
+        let missingKeys = referencedKeys.filter { variables[$0] == nil }
+        let emptyKeys = referencedKeys.filter { key in
+            guard let value = variables[key] else { return false }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        do {
+            let preview = try executor.preview(request, environment: project.selectedEnvironment)
+            return RequestDiagnostics(
+                preview: preview,
+                previewErrorMessage: nil,
+                missingKeys: missingKeys,
+                emptyKeys: emptyKeys
+            )
+        } catch {
+            return RequestDiagnostics(
+                preview: nil,
+                previewErrorMessage: error.localizedDescription,
+                missingKeys: missingKeys,
+                emptyKeys: emptyKeys
+            )
+        }
     }
 
     func filteredEnvironmentKeys(searchText: String) -> [String] {
@@ -830,13 +1131,78 @@ final class AppModel: ObservableObject {
         openRequestIDs = selectedRequestID.map { [$0] } ?? []
     }
 
+    private func requestLocation(for requestID: UUID) -> (collectionIndex: Int, requestIndex: Int)? {
+        for (collectionIndex, collection) in project.collections.enumerated() {
+            if let requestIndex = collection.requests.firstIndex(where: { $0.id == requestID }) {
+                return (collectionIndex, requestIndex)
+            }
+        }
+
+        return nil
+    }
+
     private func collectionID(for requestID: UUID) -> UUID? {
         project.collections.first(where: { collection in
             collection.requests.contains(where: { $0.id == requestID })
         })?.id
     }
 
-    private func prettyPrintedJSON(from text: String) -> String? {
+    private func referencedVariableKeys(for request: APIRequest) -> [String] {
+        var orderedKeys: [String] = []
+        var seenKeys: Set<String> = []
+
+        func collect(from text: String) {
+            for key in environmentResolver.referencedKeys(in: text) where seenKeys.insert(key).inserted {
+                orderedKeys.append(key)
+            }
+        }
+
+        collect(from: request.urlTemplate)
+
+        for item in request.queryItems where item.isEnabled {
+            collect(from: item.key)
+            collect(from: item.value)
+        }
+
+        for header in request.headers where header.isEnabled {
+            collect(from: header.key)
+            collect(from: header.value)
+        }
+
+        switch request.auth {
+        case .none:
+            break
+        case let .bearerToken(token):
+            collect(from: token)
+        case let .basic(username, password):
+            collect(from: username)
+            collect(from: password)
+        case let .apiKey(name, value, _):
+            collect(from: name)
+            collect(from: value)
+        }
+
+        switch request.body {
+        case .none:
+            break
+        case let .raw(text, contentType):
+            collect(from: text)
+            if let contentType {
+                collect(from: contentType)
+            }
+        case let .json(text):
+            collect(from: text)
+        case let .formURLEncoded(fields):
+            for field in fields where field.isEnabled {
+                collect(from: field.key)
+                collect(from: field.value)
+            }
+        }
+
+        return orderedKeys
+    }
+
+    private static func prettyPrintedJSON(from text: String) -> String? {
         guard let data = text.data(using: .utf8) else { return nil }
 
         do {
@@ -876,6 +1242,38 @@ final class AppModel: ObservableObject {
             counter += 1
         }
         return "\(base) \(counter)"
+    }
+
+    private func nextCollectionName(base: String) -> String {
+        let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBase = trimmedBase.isEmpty ? "Imported OpenAPI" : trimmedBase
+        let existing = Set(project.collections.map(\.name))
+
+        if !existing.contains(resolvedBase) {
+            return resolvedBase
+        }
+
+        var counter = 2
+        while existing.contains("\(resolvedBase) \(counter)") {
+            counter += 1
+        }
+
+        return "\(resolvedBase) \(counter)"
+    }
+
+    private func nextRequestName(base: String) -> String {
+        let existing = Set(project.collections.flatMap(\.requests).map(requestName))
+
+        if !existing.contains("\(base) Copy") {
+            return "\(base) Copy"
+        }
+
+        var counter = 2
+        while existing.contains("\(base) Copy \(counter)") {
+            counter += 1
+        }
+
+        return "\(base) Copy \(counter)"
     }
 
     private func scheduleAutosave(immediate: Bool = false) {
@@ -993,6 +1391,22 @@ enum BodyEditorKind: String, CaseIterable, Identifiable {
                 return .formURLEncoded([])
             }
         }
+    }
+}
+
+enum MoveDirection {
+    case up
+    case down
+}
+
+struct RequestDiagnostics {
+    var preview: ResolvedRequestSnapshot?
+    var previewErrorMessage: String?
+    var missingKeys: [String]
+    var emptyKeys: [String]
+
+    var hasIssues: Bool {
+        !missingKeys.isEmpty || !emptyKeys.isEmpty || previewErrorMessage != nil
     }
 }
 

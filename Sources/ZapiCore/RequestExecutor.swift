@@ -65,6 +65,13 @@ public final class RequestExecutor: Sendable {
         )
     }
 
+    public func preview(
+        _ request: APIRequest,
+        environment: APIEnvironment? = nil
+    ) throws -> ResolvedRequestSnapshot {
+        try prepare(request, variables: environment?.variables ?? [:]).snapshot
+    }
+
     private func prepare(
         _ request: APIRequest,
         variables: [String: String]

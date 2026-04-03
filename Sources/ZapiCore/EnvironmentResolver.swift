@@ -5,6 +5,36 @@ public struct EnvironmentResolver: Sendable {
 
     public init() {}
 
+    public func referencedKeys(in template: String) -> [String] {
+        guard
+            let regex = try? NSRegularExpression(pattern: Self.tokenPattern, options: [])
+        else {
+            return []
+        }
+
+        let range = NSRange(template.startIndex..<template.endIndex, in: template)
+        let matches = regex.matches(in: template, options: [], range: range)
+
+        var seen: Set<String> = []
+        var keys: [String] = []
+
+        for match in matches {
+            guard
+                match.numberOfRanges >= 2,
+                let keyRange = Range(match.range(at: 1), in: template)
+            else {
+                continue
+            }
+
+            let key = String(template[keyRange])
+            if seen.insert(key).inserted {
+                keys.append(key)
+            }
+        }
+
+        return keys
+    }
+
     public func resolve(_ template: String, variables: [String: String]) -> String {
         guard
             let regex = try? NSRegularExpression(pattern: Self.tokenPattern, options: [])
